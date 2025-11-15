@@ -562,7 +562,7 @@ export default function ProjectDetailPage() {
                       animate="visible"
                     >
                       <motion.div variants={itemVariants} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                        <Link href="/contact">
+                        <Link href="/#contact">
                           <Button className="w-full bg-blue-600 hover:bg-blue-700 shadow-lg">
                             <MessageSquare className="mr-2 h-4 w-4" />
                             Diskusikan Project Serupa

@@ -722,7 +722,7 @@ export default function Home() {
               animate={{ y: 0, opacity: 1 }}
               transition={{ duration: 0.6, delay: 0.6 }}
             >
-              © 2024 PT. Daya Prana Raya. All rights reserved.
+              © 2025 PT. Daya Prana Raya. All rights reserved.
             </motion.p>
           </motion.div>
         </div>

@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "PT. Daya Prana Raya - Civil Construction & Building Maintenance",
     description: "Perusahaan konstruksi terpercaya yang bergerak di bidang jasa konstruksi, sipil, mekanik, elektrik, dan engineering.",
-    url: "https://dayapranaraya.com",
+    url: "https://dayapranaraya.my.id",
     siteName: "PT. Daya Prana Raya",
     type: "website",
   },

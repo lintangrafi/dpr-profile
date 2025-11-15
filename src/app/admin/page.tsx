@@ -11,14 +11,14 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { supabase } from '@/lib/supabase'
+import { supabase, supabaseService } from '@/lib/supabase'
 import { Project, Category, ProjectImage } from '@/types/database'
-import { 
-  Plus, 
-  Edit, 
-  Trash2, 
-  Upload, 
-  X, 
+import {
+  Plus,
+  Edit,
+  Trash2,
+  Upload,
+  X,
   Image as ImageIcon,
   Building2,
   Settings,
@@ -38,6 +38,7 @@ export default function AdminDashboard() {
   const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([])
   const [isAdmin, setIsAdmin] = useState(false)
   const [password, setPassword] = useState('')
+  const [email, setEmail] = useState('') // Add email state
 
   // Form state
   const [formData, setFormData] = useState({
@@ -52,29 +53,49 @@ export default function AdminDashboard() {
     status: 'completed' as 'completed' | 'ongoing' | 'planning'
   })
 
+  // Add state for existing images during editing
+  const [existingImages, setExistingImages] = useState<any[]>([])
+
   useEffect(() => {
-    // Check admin authentication (simple password for demo)
-    const adminPassword = localStorage.getItem('admin_password')
-    if (adminPassword === 'admin123') {
-      setIsAdmin(true)
-      fetchData()
-    }
+    // Check admin authentication (now using Supabase Auth)
+    const checkAdminAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setIsAdmin(true);
+        await fetchData();
+      }
+    };
+    checkAdminAuth();
   }, [])
 
-  const handleLogin = () => {
-    if (password === 'admin123') {
-      setIsAdmin(true)
-      localStorage.setItem('admin_password', 'admin123')
-      fetchData()
-    } else {
-      alert('Password salah!')
+  const handleLogin = async () => {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      setIsAdmin(true);
+      await fetchData();
+      // Store a simple flag to remember admin login state
+      localStorage.setItem('admin_logged_in', 'true');
+    } catch (error) {
+      console.error('Login error:', error);
+      alert('Email atau password salah!');
     }
   }
 
-  const handleLogout = () => {
-    setIsAdmin(false)
-    localStorage.removeItem('admin_password')
-    setPassword('')
+  const handleLogout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.error('Logout error:', error);
+    }
+    setIsAdmin(false);
+    localStorage.removeItem('admin_logged_in');
+    setPassword('');
+    setEmail('');
   }
 
   const fetchData = async () => {
@@ -96,27 +117,51 @@ export default function AdminDashboard() {
     }
   }
 
-  const generateSlug = (title: string) => {
-    return title
+  const generateSlug = async (title: string) => {
+    let slug = title
       .toLowerCase()
       .replace(/[^a-z0-9 -]/g, '')
       .replace(/\s+/g, '-')
       .replace(/-+/g, '-')
-      .trim()
+      .trim();
+
+    // Check if slug already exists and append a number if needed
+    let uniqueSlug = slug;
+    let counter = 1;
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('slug', uniqueSlug)
+        .single();
+
+      if (!data || error) {
+        // No conflict found, we can use this slug
+        break;
+      }
+
+      // Try next slug with counter
+      uniqueSlug = `${slug}-${counter}`;
+      counter++;
+    }
+
+    return uniqueSlug;
   }
 
-  const handleTitleChange = (title: string) => {
+  const handleTitleChange = async (title: string) => {
+    const uniqueSlug = await generateSlug(title);
     setFormData(prev => ({
       ...prev,
       title,
-      slug: generateSlug(title)
+      slug: uniqueSlug
     }))
   }
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
     setUploadedImages(prev => [...prev, ...files])
-    
+
     // Create preview URLs
     files.forEach(file => {
       const reader = new FileReader()
@@ -132,34 +177,103 @@ export default function AdminDashboard() {
     setImagePreviewUrls(prev => prev.filter((_, i) => i !== index))
   }
 
+  const handleDeleteExistingImage = async (imageId: string) => {
+    if (!confirm('Apakah Anda yakin ingin menghapus gambar ini?')) return;
+
+    try {
+      // Remove from Supabase storage (get the image URL first to delete from storage)
+      const { data: imageToDelete, error: fetchError } = await supabase
+        .from('project_images')
+        .select('image_url, image_name')
+        .eq('id', imageId)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      // Extract file name from URL to delete from storage
+      const imageUrl = imageToDelete.image_url;
+      const fileName = imageUrl.split('/').pop(); // Get the filename from the URL
+
+      // Delete from storage
+      if (fileName) {
+        await supabase.storage
+          .from('project-images')
+          .remove([fileName]);
+      }
+
+      // Delete from database
+      const { error: deleteError } = await supabase
+        .from('project_images')
+        .delete()
+        .eq('id', imageId);
+
+      if (deleteError) throw deleteError;
+
+      // Update the existing images state to remove the deleted image
+      setExistingImages(prev => prev.filter(img => img.id !== imageId));
+
+      alert('Gambar berhasil dihapus!');
+    } catch (error) {
+      console.error('Error deleting image:', error);
+      alert('Gagal menghapus gambar. Silakan coba lagi.');
+    }
+  }
+
   const uploadImagesToSupabase = async (projectId: string) => {
     const uploadedUrls: string[] = []
 
     for (const file of uploadedImages) {
-      const fileName = `${Date.now()}-${file.name}`
-      const { data, error } = await supabase.storage
-        .from('project-images')
-        .upload(fileName, file)
+      try {
+        // Validate file type
+        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
+        if (!allowedTypes.includes(file.type)) {
+          console.error(`Invalid file type: ${file.type}`)
+          alert(`File ${file.name} has unsupported type. Only JPG, PNG, and WebP are allowed.`)
+          continue
+        }
 
-      if (error) {
-        console.error('Error uploading image:', error)
-        continue
+        // Validate file size (max 5MB)
+        if (file.size > 5 * 1024 * 1024) {
+          console.error(`File too large: ${file.name}`)
+          alert(`File ${file.name} is too large. Maximum size is 5MB.`)
+          continue
+        }
+
+        const fileName = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${file.name}`
+        const { data, error } = await supabase.storage
+          .from('project-images')
+          .upload(fileName, file)
+
+        if (error) {
+          console.error('Error uploading image:', error)
+          alert(`Failed to upload ${file.name}: ${error.message}`)
+          continue
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('project-images')
+          .getPublicUrl(fileName)
+
+        uploadedUrls.push(publicUrl)
+
+        // Save to database
+        const { error: dbError } = await supabase.from('project_images').insert({
+          project_id: projectId,
+          image_url: publicUrl,
+          image_name: file.name,
+          alt_text: formData.title || 'Project image',
+          sort_order: uploadedUrls.length - 1
+        })
+
+        if (dbError) {
+          console.error('Database error:', dbError)
+          alert(`Failed to save image ${file.name} to database: ${dbError.message}`)
+          continue
+        }
+      } catch (uploadError) {
+        console.error('Unexpected error uploading image:', uploadError)
+        alert(`Unexpected error uploading ${file.name}`)
       }
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('project-images')
-        .getPublicUrl(fileName)
-
-      uploadedUrls.push(publicUrl)
-
-      // Save to database
-      await supabase.from('project_images').insert({
-        project_id: projectId,
-        image_url: publicUrl,
-        image_name: file.name,
-        alt_text: formData.title,
-        sort_order: uploadedUrls.length - 1
-      })
     }
 
     return uploadedUrls
@@ -167,7 +281,7 @@ export default function AdminDashboard() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     try {
       // Insert project
       const { data: projectData, error: projectError } = await supabase
@@ -211,16 +325,17 @@ export default function AdminDashboard() {
 
       // Refresh data
       fetchData()
-      
+
       alert('Project berhasil dibuat!')
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating project:', error)
-      alert('Gagal membuat project. Silakan coba lagi.')
+      alert(`Gagal membuat project. ${error?.message || 'Silakan coba lagi.'}`)
     }
   }
 
-  const handleEdit = (project: Project) => {
+  const handleEdit = async (project: Project) => {
     setCurrentProject(project)
+    // For editing, we keep the original slug to avoid conflicts, but if the title changes, we generate a new one
     setFormData({
       title: project.title,
       slug: project.slug,
@@ -232,12 +347,39 @@ export default function AdminDashboard() {
       is_featured: project.is_featured,
       status: project.status
     })
+
+    // Fetch existing images for this project
+    const { data: existingImages, error: imagesError } = await supabase
+      .from('project_images')
+      .select('*')
+      .eq('project_id', project.id)
+      .order('sort_order')
+
+    if (imagesError) {
+      console.error('Error fetching existing images:', imagesError)
+    } else {
+      setExistingImages(existingImages || [])
+    }
+
+    // Clear any previously uploaded images for this edit session
+    setUploadedImages([])
+    setImagePreviewUrls([])
+    setIsCreateModalOpen(false) // Close create modal if open
     setIsEditModalOpen(true)
+  }
+
+  const handleTitleChangeEdit = async (title: string) => {
+    const uniqueSlug = await generateSlug(title);
+    setFormData(prev => ({
+      ...prev,
+      title,
+      slug: uniqueSlug
+    }))
   }
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (!currentProject) return
 
     try {
@@ -265,14 +407,27 @@ export default function AdminDashboard() {
 
       setIsEditModalOpen(false)
       setCurrentProject(null)
+      // Reset form data to clean state
+      setFormData({
+        title: '',
+        slug: '',
+        description: '',
+        client_name: '',
+        location: '',
+        completion_date: '',
+        category_id: '',
+        is_featured: false,
+        status: 'completed'
+      });
+      setExistingImages([])
       setUploadedImages([])
       setImagePreviewUrls([])
-      
+
       fetchData()
       alert('Project berhasil diperbarui!')
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating project:', error)
-      alert('Gagal memperbarui project. Silakan coba lagi.')
+      alert(`Gagal memperbarui project. ${error?.message || 'Silakan coba lagi.'}`)
     }
   }
 
@@ -280,6 +435,7 @@ export default function AdminDashboard() {
     if (!confirm('Apakah Anda yakin ingin menghapus project ini?')) return
 
     try {
+      // Delete project and related images (due to cascade delete)
       const { error } = await supabase
         .from('projects')
         .delete()
@@ -289,9 +445,9 @@ export default function AdminDashboard() {
 
       fetchData()
       alert('Project berhasil dihapus!')
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error deleting project:', error)
-      alert('Gagal menghapus project. Silakan coba lagi.')
+      alert(`Gagal menghapus project. ${error?.message || 'Silakan coba lagi.'}`)
     }
   }
 
@@ -311,6 +467,17 @@ export default function AdminDashboard() {
           <CardContent>
             <div className="space-y-4">
               <div>
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Masukkan email admin"
+                  onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+                />
+              </div>
+              <div>
                 <Label htmlFor="password">Password</Label>
                 <Input
                   id="password"
@@ -325,7 +492,7 @@ export default function AdminDashboard() {
                 Masuk
               </Button>
               <p className="text-xs text-gray-500 text-center">
-                Demo: Gunakan password "admin123"
+                Gunakan email dan password admin Supabase Anda
               </p>
             </div>
           </CardContent>
@@ -370,7 +537,7 @@ export default function AdminDashboard() {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center">
@@ -384,7 +551,7 @@ export default function AdminDashboard() {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center">
@@ -398,7 +565,7 @@ export default function AdminDashboard() {
               </div>
             </CardContent>
           </Card>
-          
+
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center">
@@ -424,175 +591,387 @@ export default function AdminDashboard() {
                   Kelola project-project PT. Daya Prana Raya
                 </CardDescription>
               </div>
-              <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
-                <DialogTrigger asChild>
-                  <Button>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Tambah Project
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                  <DialogHeader>
-                    <DialogTitle>Tambah Project Baru</DialogTitle>
-                    <DialogDescription>
-                      Tambahkan project baru ke portfolio
-                    </DialogDescription>
-                  </DialogHeader>
-                  
-                  <form onSubmit={handleSubmit} className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <Label htmlFor="title">Judul Project</Label>
-                        <Input
-                          id="title"
-                          value={formData.title}
-                          onChange={(e) => handleTitleChange(e.target.value)}
-                          required
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="slug">Slug</Label>
-                        <Input
-                          id="slug"
-                          value={formData.slug}
-                          onChange={(e) => setFormData(prev => ({ ...prev, slug: e.target.value }))}
-                          required
-                        />
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <Label htmlFor="description">Deskripsi</Label>
-                      <Textarea
-                        id="description"
-                        value={formData.description}
-                        onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                        rows={4}
-                      />
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <Label htmlFor="client_name">Nama Klien</Label>
-                        <Input
-                          id="client_name"
-                          value={formData.client_name}
-                          onChange={(e) => setFormData(prev => ({ ...prev, client_name: e.target.value }))}
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="location">Lokasi</Label>
-                        <Input
-                          id="location"
-                          value={formData.location}
-                          onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
-                        />
-                      </div>
-                    </div>
-                    
-                    <div className="grid grid-cols-3 gap-4">
-                      <div>
-                        <Label htmlFor="completion_date">Tanggal Selesai</Label>
-                        <Input
-                          id="completion_date"
-                          type="date"
-                          value={formData.completion_date}
-                          onChange={(e) => setFormData(prev => ({ ...prev, completion_date: e.target.value }))}
-                        />
-                      </div>
-                      <div>
-                        <Label htmlFor="category">Kategori</Label>
-                        <Select value={formData.category_id} onValueChange={(value) => setFormData(prev => ({ ...prev, category_id: value }))}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Pilih kategori" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {categories.map((category) => (
-                              <SelectItem key={category.id} value={category.id}>
-                                {category.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div>
-                        <Label htmlFor="status">Status</Label>
-                        <Select value={formData.status} onValueChange={(value: any) => setFormData(prev => ({ ...prev, status: value }))}>
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="completed">Selesai</SelectItem>
-                            <SelectItem value="ongoing">Berjalan</SelectItem>
-                            <SelectItem value="planning">Perencanaan</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                    
-                    <div className="flex items-center space-x-2">
-                      <Checkbox
-                        id="is_featured"
-                        checked={formData.is_featured}
-                        onCheckedChange={(checked) => setFormData(prev => ({ ...prev, is_featured: checked as boolean }))}
-                      />
-                      <Label htmlFor="is_featured">Tampilkan di halaman utama</Label>
-                    </div>
-                    
-                    <div>
-                      <Label htmlFor="images">Upload Gambar</Label>
-                      <div className="border-2 border-dashed border-gray-300 rounded-lg p-4">
-                        <input
-                          type="file"
-                          id="images"
-                          multiple
-                          accept="image/*"
-                          onChange={handleImageUpload}
-                          className="hidden"
-                        />
-                        <label htmlFor="images" className="cursor-pointer">
-                          <div className="text-center">
-                            <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-                            <p className="text-sm text-gray-600">Klik untuk upload gambar</p>
-                            <p className="text-xs text-gray-500">Support: JPG, PNG, WebP (Max 5MB)</p>
-                          </div>
-                        </label>
-                      </div>
-                      
-                      {imagePreviewUrls.length > 0 && (
-                        <div className="grid grid-cols-4 gap-2 mt-4">
-                          {imagePreviewUrls.map((url, index) => (
-                            <div key={index} className="relative group">
-                              <img
-                                src={url}
-                                alt={`Preview ${index + 1}`}
-                                className="w-full h-20 object-cover rounded"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => removeImage(index)}
-                                className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </div>
-                          ))}
+              <div className="flex space-x-2">
+                <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Tambah Project
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Tambah Project Baru</DialogTitle>
+                      <DialogDescription>
+                        Tambahkan project baru ke portfolio
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="title">Judul Project</Label>
+                          <Input
+                            id="title"
+                            value={formData.title}
+                            onChange={async (e) => {
+                              await handleTitleChange(e.target.value)
+                            }}
+                            required
+                          />
                         </div>
-                      )}
-                    </div>
-                    
-                    <div className="flex justify-end space-x-2">
-                      <Button type="button" variant="outline" onClick={() => setIsCreateModalOpen(false)}>
-                        Batal
-                      </Button>
-                      <Button type="submit">
-                        <Save className="w-4 h-4 mr-2" />
-                        Simpan Project
-                      </Button>
-                    </div>
-                  </form>
-                </DialogContent>
-              </Dialog>
+                        <div>
+                          <Label htmlFor="slug">Slug</Label>
+                          <Input
+                            id="slug"
+                            value={formData.slug}
+                            onChange={(e) => setFormData(prev => ({ ...prev, slug: e.target.value }))}
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label htmlFor="description">Deskripsi</Label>
+                        <Textarea
+                          id="description"
+                          value={formData.description}
+                          onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                          rows={4}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="client_name">Nama Klien</Label>
+                          <Input
+                            id="client_name"
+                            value={formData.client_name}
+                            onChange={(e) => setFormData(prev => ({ ...prev, client_name: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="location">Lokasi</Label>
+                          <Input
+                            id="location"
+                            value={formData.location}
+                            onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <Label htmlFor="completion_date">Tanggal Selesai</Label>
+                          <Input
+                            id="completion_date"
+                            type="date"
+                            value={formData.completion_date}
+                            onChange={(e) => setFormData(prev => ({ ...prev, completion_date: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="category">Kategori</Label>
+                          <Select value={formData.category_id} onValueChange={(value) => setFormData(prev => ({ ...prev, category_id: value }))}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Pilih kategori" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map((category) => (
+                                <SelectItem key={category.id} value={category.id}>
+                                  {category.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label htmlFor="status">Status</Label>
+                          <Select value={formData.status} onValueChange={(value: any) => setFormData(prev => ({ ...prev, status: value }))}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="completed">Selesai</SelectItem>
+                              <SelectItem value="ongoing">Berjalan</SelectItem>
+                              <SelectItem value="planning">Perencanaan</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="is_featured"
+                          checked={formData.is_featured}
+                          onCheckedChange={(checked) => setFormData(prev => ({ ...prev, is_featured: checked as boolean }))}
+                        />
+                        <Label htmlFor="is_featured">Tampilkan di halaman utama</Label>
+                      </div>
+
+                      <div>
+                        <Label htmlFor="images">Upload Gambar</Label>
+                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-4">
+                          <input
+                            type="file"
+                            id="images"
+                            multiple
+                            accept="image/*"
+                            onChange={handleImageUpload}
+                            className="hidden"
+                          />
+                          <label htmlFor="images" className="cursor-pointer">
+                            <div className="text-center">
+                              <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+                              <p className="text-sm text-gray-600">Klik untuk upload gambar</p>
+                              <p className="text-xs text-gray-500">Support: JPG, PNG, WebP (Max 5MB)</p>
+                            </div>
+                          </label>
+                        </div>
+
+                        {imagePreviewUrls.length > 0 && (
+                          <div className="grid grid-cols-4 gap-2 mt-4">
+                            {imagePreviewUrls.map((url, index) => (
+                              <div key={index} className="relative group">
+                                <img
+                                  src={url}
+                                  alt={`Preview ${index + 1}`}
+                                  className="w-full h-20 object-cover rounded"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeImage(index)}
+                                  className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex justify-end space-x-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setIsCreateModalOpen(false);
+                            // Reset form data to clean state
+                            setFormData({
+                              title: '',
+                              slug: '',
+                              description: '',
+                              client_name: '',
+                              location: '',
+                              completion_date: '',
+                              category_id: '',
+                              is_featured: false,
+                              status: 'completed'
+                            });
+                            setUploadedImages([]);
+                            setImagePreviewUrls([]);
+                          }}
+                        >
+                          Batal
+                        </Button>
+                        <Button type="submit">
+                          <Save className="w-4 h-4 mr-2" />
+                          Simpan Project
+                        </Button>
+                      </div>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Edit Dialog - Separate dialog for editing */}
+                <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
+                  <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Edit Project</DialogTitle>
+                      <DialogDescription>
+                        Edit project details
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <form onSubmit={handleUpdate} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="title">Judul Project</Label>
+                          <Input
+                            id="title"
+                            value={formData.title}
+                            onChange={async (e) => {
+                              await handleTitleChangeEdit(e.target.value)
+                            }}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="slug">Slug</Label>
+                          <Input
+                            id="slug"
+                            value={formData.slug}
+                            onChange={(e) => setFormData(prev => ({ ...prev, slug: e.target.value }))}
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label htmlFor="description">Deskripsi</Label>
+                        <Textarea
+                          id="description"
+                          value={formData.description}
+                          onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                          rows={4}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="client_name">Nama Klien</Label>
+                          <Input
+                            id="client_name"
+                            value={formData.client_name}
+                            onChange={(e) => setFormData(prev => ({ ...prev, client_name: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="location">Lokasi</Label>
+                          <Input
+                            id="location"
+                            value={formData.location}
+                            onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <Label htmlFor="completion_date">Tanggal Selesai</Label>
+                          <Input
+                            id="completion_date"
+                            type="date"
+                            value={formData.completion_date}
+                            onChange={(e) => setFormData(prev => ({ ...prev, completion_date: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="category">Kategori</Label>
+                          <Select value={formData.category_id} onValueChange={(value) => setFormData(prev => ({ ...prev, category_id: value }))}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Pilih kategori" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map((category) => (
+                                <SelectItem key={category.id} value={category.id}>
+                                  {category.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label htmlFor="status">Status</Label>
+                          <Select value={formData.status} onValueChange={(value: any) => setFormData(prev => ({ ...prev, status: value }))}>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="completed">Selesai</SelectItem>
+                              <SelectItem value="ongoing">Berjalan</SelectItem>
+                              <SelectItem value="planning">Perencanaan</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="is_featured"
+                          checked={formData.is_featured}
+                          onCheckedChange={(checked) => setFormData(prev => ({ ...prev, is_featured: checked as boolean }))}
+                        />
+                        <Label htmlFor="is_featured">Tampilkan di halaman utama</Label>
+                      </div>
+
+                      <div>
+                        <Label htmlFor="images">Upload Gambar</Label>
+                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-4">
+                          <input
+                            type="file"
+                            id="images"
+                            multiple
+                            accept="image/*"
+                            onChange={handleImageUpload}
+                            className="hidden"
+                          />
+                          <label htmlFor="images" className="cursor-pointer">
+                            <div className="text-center">
+                              <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+                              <p className="text-sm text-gray-600">Klik untuk upload gambar</p>
+                              <p className="text-xs text-gray-500">Support: JPG, PNG, WebP (Max 5MB)</p>
+                            </div>
+                          </label>
+                        </div>
+
+                        {imagePreviewUrls.length > 0 && (
+                          <div className="grid grid-cols-4 gap-2 mt-4">
+                            {imagePreviewUrls.map((url, index) => (
+                              <div key={index} className="relative group">
+                                <img
+                                  src={url}
+                                  alt={`Preview ${index + 1}`}
+                                  className="w-full h-20 object-cover rounded"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeImage(index)}
+                                  className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex justify-end space-x-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setIsEditModalOpen(false);
+                            setCurrentProject(null);
+                            // Reset form data to clean state
+                            setFormData({
+                              title: '',
+                              slug: '',
+                              description: '',
+                              client_name: '',
+                              location: '',
+                              completion_date: '',
+                              category_id: '',
+                              is_featured: false,
+                              status: 'completed'
+                            });
+                            setUploadedImages([]);
+                            setImagePreviewUrls([]);
+                          }}
+                        >
+                          Batal
+                        </Button>
+                        <Button type="submit">
+                          <Save className="w-4 h-4 mr-2" />
+                          Update Project
+                        </Button>
+                      </div>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -673,7 +1052,7 @@ export default function AdminDashboard() {
                     ))}
                   </tbody>
                 </table>
-                
+
                 {projects.length === 0 && (
                   <div className="text-center py-8">
                     <Building2 className="w-12 h-12 text-gray-300 mx-auto mb-4" />

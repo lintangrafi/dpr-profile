@@ -64,18 +64,18 @@ export default function Header() {
             {/* Logo */}
             <div className="flex items-center space-x-3 flex-shrink-0">
               <Link href="/" className="flex items-center space-x-3">
-                <div className="relative w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center shadow-md overflow-hidden">
+                <div className="relative w-10 h-10 bg-blue-600 items-center justify-center overflow-hidden">
                   <img
                     src="/logo-company.png"
                     alt="PT. Daya Prana Raya"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full"
                   />
                 </div>
                 <div className="hidden sm:block">
-                  <h1 className="text-lg font-bold text-gray-900 truncate">
+                  <h1 className="text-lg font-bold text-blue-900 truncate">
                     PT. Daya Prana Raya
                   </h1>
-                  <p className="text-xs text-gray-600 truncate">
+                  <p className="text-xs text-blue-600 truncate">
                     Civil Construction & Building Maintenance
                   </p>
                 </div>
